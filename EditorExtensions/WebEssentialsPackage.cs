@@ -282,8 +282,8 @@ namespace MadsKristensen.EditorExtensions
 
     [Guid(CommandGuids.guidEditorExtensionsPkgString2)]
     [ProvideAutoLoad(UIContextGuids80.SolutionExists)]
-    [ProvideAutoLoad(UIContextGuids80.NoSolution)]
-    [ProvideAutoLoad(UIContextGuids80.EmptySolution)]
+    //[ProvideAutoLoad(UIContextGuids80.NoSolution)]
+    //[ProvideAutoLoad(UIContextGuids80.EmptySolution)]
     public sealed class CompatibilityCheckerPackage : Package
     {
         protected async override void Initialize()

@@ -1,6 +1,8 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Reflection;
@@ -181,6 +183,9 @@ namespace MadsKristensen.EditorExtensions
             }
         }
 
+        static readonly IVsExtensionManager extensionManager = Package.GetGlobalService(typeof(SVsExtensionManager)) as IVsExtensionManager;
+        static readonly IVsExtensionRepository extensionRepository = Package.GetGlobalService(typeof(SVsExtensionRepository)) as IVsExtensionRepository;
+
         private static string WebEssentialsVersionString
         {
             get
@@ -188,7 +193,6 @@ namespace MadsKristensen.EditorExtensions
 
                 string versionString = string.Empty;
 
-                var extensionManager = Package.GetGlobalService(typeof(SVsExtensionManager)) as IVsExtensionManager;
                 if (extensionManager != null)
                 {
                     //Get the extension using the extension manager
@@ -196,11 +200,133 @@ namespace MadsKristensen.EditorExtensions
                     if (extension != null)
                     {
                         versionString = extension.Header.Version.ToString();
+                        if (extensionRepository != null)
+                        {
+                            var query = extensionRepository.CreateQuery<VSGalleryEntry>(false, true)
+                                .OrderByDescending(v => v.Ranking)
+                                .Skip(0)
+                                .Take(25) as IVsExtensionRepositoryQuery<VSGalleryEntry>;
+                            if (query == null) return versionString;
+
+                            query.ExecuteCompleted += QueryExecuteCompleted;
+                            query.SearchText = extension.Header.Name;
+                            query.ExecuteAsync(extension);
+                        }
                     }
                 }
 
                 return versionString;
             }
+        }
+
+        private static void QueryExecuteCompleted(object sender, ExecuteCompletedEventArgs e)
+        {
+            try
+            {
+                if (e.Error != null)
+                {
+                    return;
+                }
+
+                var extensionInformation = (ExtensionInformation)e.UserState;
+                var extensionName = extensionInformation.Name;
+                var entry =
+                    e.Results.Cast<VSGalleryEntry>().SingleOrDefault(r =>
+                        r.Name == extensionInformation.Name && r.VsixID == extensionInformation.Identifier);
+                if (entry == null)
+                {
+                    return;
+                }
+
+                var installedExtensions = GetInstalledExtensionsInformation();
+                var installedExtension = installedExtensions.FirstOrDefault(ext => ext.Name == extensionName
+                                    &&
+                                    ext.Identifier ==
+                                    extensionInformation.Identifier);
+                if (true)
+                {
+                    if (installedExtension != null && installedExtension.Version.ToString() == entry.VsixVersion)
+                        return;
+                }
+
+                try
+                {
+                    var installableExtension = extensionRepository.Download(entry);
+                    if (installableExtension == null)
+                        return;
+
+                    if (installedExtension != null)
+                    {
+                        if (installedExtension.Version >= installableExtension.Header.Version)
+                            return;
+                        //extension needs to be updated - uninstall and install again
+                        UnInstallExtensions(new List<ExtensionInformation> { installedExtension }, DateTime.Now);
+                    }
+
+                    extensionManager.Install(installableExtension, false);
+                }
+                catch (Exception exception)
+                {
+                }
+            }
+            catch (Exception exception)
+            {
+            }
+        }
+
+        public static void UnInstallExtensions(List<ExtensionInformation> extensions, DateTimeOffset configUpdateDateTime)
+        {
+            if (extensions == null || extensions.Count == 0)
+                return;
+
+            var installedUserExtensions = extensionManager.GetInstalledExtensions().
+                                    Where(e => !e.Header.SystemComponent).ToList();
+
+            var extensionsInstalledAfterConfigUpdated = installedUserExtensions
+                            .Where(i => i.InstalledOn > configUpdateDateTime).ToList();
+
+            foreach (var extension in extensions)
+            {
+                try
+                {
+                    var extensionInformation = extension;
+                    var userExtension =
+                        installedUserExtensions.SingleOrDefault(e =>
+                            e.Header.Name == extensionInformation.Name &&
+                            e.Header.Identifier == extensionInformation.Identifier);
+                    if (userExtension == null) continue;
+
+                    if (extensionsInstalledAfterConfigUpdated.Contains(userExtension))
+                    {
+                        continue;
+                    }
+
+                    extensionManager.Uninstall(userExtension);
+                }
+                catch (Exception exception)
+                {
+                }
+            }
+        }
+
+        public static List<ExtensionInformation> GetInstalledExtensionsInformation()
+        {
+            //In this scenario we get the information already from the command guids
+            var installedExtensions = extensionManager.GetInstalledExtensions();
+            var userExtensions = installedExtensions.Where(ext =>
+                        !ext.Header.SystemComponent && !ext.Header.InstalledByMsi)
+                        .OrderBy(ext => ext.Header.Name);
+
+
+            //Here we enter the information of the selected extension into a model
+            return userExtensions.Select(
+                    e => new ExtensionInformation
+            {
+                Name = e.Header.Name,
+                Identifier = e.Header.Identifier,
+                Version = e.Header.Version
+            })
+                    .ToList();
         }
 
         public static string VisualStudioVersionString
